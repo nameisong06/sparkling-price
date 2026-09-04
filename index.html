@@ -139,6 +139,18 @@
   .change-item.up .change-pct{ color:var(--up); }
   .change-item.down .change-pct{ color:var(--down); }
 
+  .rank-row{
+    display:flex; align-items:center; gap:12px; padding:9px 12px; border-radius:8px;
+  }
+  .rank-row.self{ background: var(--accent-soft); }
+  .rank-num{ width:20px; text-align:center; font-weight:800; font-size:12.5px; color:var(--ink-soft); }
+  .rank-row.self .rank-num{ color:var(--self); }
+  .rank-name{ flex:1; font-size:13px; font-weight:600; }
+  .rank-bar-wrap{ flex:2; background:var(--surface-sunken); border-radius:5px; height:8px; overflow:hidden; }
+  .rank-bar{ height:100%; border-radius:5px; background:#B7C4C8; }
+  .rank-row.self .rank-bar{ background: var(--self); }
+  .rank-price{ width:110px; text-align:right; font-size:12.5px; font-variant-numeric: tabular-nums; font-weight:700; }
+
   .chart-wrap{ position:relative; height: 340px; margin-top:10px; }
   .chart-wrap .empty{ position:absolute; inset:0; display:flex; align-items:center; justify-content:center; }
 
@@ -177,6 +189,7 @@
     <button class="tab" data-tab="changes">변동요약</button>
     <button class="tab" data-tab="compare">단가비교</button>
     <button class="tab" data-tab="trend">추이</button>
+    <button class="tab" data-tab="summary">요약</button>
   </div>
 
   <!-- 입력 -->
@@ -237,6 +250,32 @@
         <button class="ghost" id="trendModeBtn" style="margin-left:auto;">병당단가 보기</button>
       </div>
       <div class="chart-wrap"><canvas id="trendChart"></canvas><div class="empty" id="trendEmpty" style="display:none;"></div></div>
+    </div>
+  </div>
+
+  <!-- 요약(보고용) -->
+  <div class="panel" id="panel-summary">
+    <div class="card">
+      <div class="row">
+        <label class="f">기준일</label>
+        <select id="summaryDate"></select>
+        <span class="meta" id="summaryMeta"></span>
+      </div>
+    </div>
+
+    <div class="card">
+      <p class="section-title">① 오늘 가격 변동</p>
+      <div id="summaryChanges"></div>
+    </div>
+
+    <div class="card">
+      <p class="section-title">② 100mL당 단가 순위 <span class="section-desc" style="display:inline;">(20병 묶음 기준, 모든 브랜드 공통)</span></p>
+      <div id="summaryRank"></div>
+    </div>
+
+    <div class="card">
+      <p class="section-title">③ 결론</p>
+      <div id="summaryConclusion" style="font-size:13.5px; line-height:1.7;"></div>
     </div>
   </div>
 
@@ -327,6 +366,7 @@ document.querySelectorAll('.tab').forEach(btn=>{
     if(btn.dataset.tab==='changes') renderChanges();
     if(btn.dataset.tab==='compare') renderCompare();
     if(btn.dataset.tab==='trend') renderTrend();
+    if(btn.dataset.tab==='summary') renderSummary();
   });
 });
 
@@ -403,6 +443,26 @@ async function handleSave(){
   setTimeout(()=>toast.classList.remove('show'), result.ok ? 2200 : 6000);
 }
 
+// ---------- 공통: 변동 계산 ----------
+function computeDiffs(dateStr, prevDate){
+  const cur = history[dateStr] || {};
+  const prev = history[prevDate] || {};
+  const diffs = [];
+  BRANDS.forEach(b=>{
+    b.valid.forEach(bc=>{
+      const cv = cur[b.key] ? cur[b.key][bc] : undefined;
+      const pv = prev[b.key] ? prev[b.key][bc] : undefined;
+      if(cv != null && pv != null && Number(cv) !== Number(pv)){
+        const delta = Number(cv) - Number(pv);
+        const pct = (delta / Number(pv)) * 100;
+        diffs.push({ brand:b, bc, prev:Number(pv), cur:Number(cv), delta, pct });
+      }
+    });
+  });
+  diffs.sort((a,b)=>Math.abs(b.pct)-Math.abs(a.pct));
+  return diffs;
+}
+
 // ---------- 변동요약 탭 ----------
 function renderChanges(){
   const sel = document.getElementById('changeDate');
@@ -419,21 +479,7 @@ function renderChanges(){
   }
   meta.textContent = `${prevDate} 대비`;
 
-  const cur = history[dateStr] || {};
-  const prev = history[prevDate] || {};
-  const diffs = [];
-  BRANDS.forEach(b=>{
-    b.valid.forEach(bc=>{
-      const cv = cur[b.key] ? cur[b.key][bc] : undefined;
-      const pv = prev[b.key] ? prev[b.key][bc] : undefined;
-      if(cv != null && pv != null && Number(cv) !== Number(pv)){
-        const delta = Number(cv) - Number(pv);
-        const pct = (delta / Number(pv)) * 100;
-        diffs.push({ brand:b, bc, prev:Number(pv), cur:Number(cv), delta, pct });
-      }
-    });
-  });
-  diffs.sort((a,b)=>Math.abs(b.pct)-Math.abs(a.pct));
+  const diffs = computeDiffs(dateStr, prevDate);
 
   if(diffs.length===0){
     list.innerHTML = '<div class="empty">변동 없음 — 전일과 동일해요.</div>';
@@ -578,11 +624,104 @@ function renderTrend(){
   });
 }
 
-// ---------- selects / meta ----------
+// ---------- 요약(보고용) 탭 ----------
+function renderSummary(){
+  const dateStr = document.getElementById('summaryDate').value;
+  const metaEl = document.getElementById('summaryMeta');
+  const changesEl = document.getElementById('summaryChanges');
+  const rankEl = document.getElementById('summaryRank');
+  const conclEl = document.getElementById('summaryConclusion');
+
+  if(!dateStr){
+    metaEl.textContent = '';
+    changesEl.innerHTML = '<div class="empty">저장된 데이터가 없어요.</div>';
+    rankEl.innerHTML = '';
+    conclEl.innerHTML = '';
+    return;
+  }
+  metaEl.textContent = `${dateStr} 기준`;
+  const cur = history[dateStr] || {};
+
+  // ① 변동
+  const prevDate = prevDateBefore(dateStr);
+  if(!prevDate){
+    changesEl.innerHTML = '<div class="empty">비교할 이전 날짜가 없어요.</div>';
+  } else {
+    const diffs = computeDiffs(dateStr, prevDate);
+    if(diffs.length===0){
+      changesEl.innerHTML = `<div class="empty">${prevDate} 대비 변동 없음</div>`;
+    } else {
+      const ups = diffs.filter(d=>d.delta>0).length;
+      const downs = diffs.filter(d=>d.delta<0).length;
+      changesEl.innerHTML =
+        `<p class="section-desc" style="margin-bottom:8px;">${prevDate} 대비 · 인상 ${ups}건 · 인하 ${downs}건</p>` +
+        diffs.slice(0,6).map(d=>{
+          const dir = d.delta>0 ? 'up' : 'down';
+          const arrow = d.delta>0 ? '▲' : '▼';
+          return `<div class="change-item ${dir}" style="margin-bottom:6px;">
+            <div class="change-left">
+              <div class="change-brand">${d.brand.label}${d.brand.self?' (자사)':''}</div>
+              <div class="change-sub">${d.bc}병</div>
+            </div>
+            <div class="change-nums">${fmt(d.prev)} → ${fmt(d.cur)} <span class="change-pct">${arrow} ${Math.abs(d.pct).toFixed(1)}%</span></div>
+          </div>`;
+        }).join('') +
+        (diffs.length>6 ? `<p class="section-desc" style="margin-top:4px;">외 ${diffs.length-6}건 더 (변동요약 탭에서 전체 확인)</p>` : '');
+    }
+  }
+
+  // ② 100mL당 단가 순위 (20병 공통 기준)
+  const REF_BC = 20;
+  const rows = BRANDS.filter(b=>isValid(b,REF_BC)).map(b=>{
+    const price = cur[b.key] ? cur[b.key][String(REF_BC)] : undefined;
+    if(price == null) return null;
+    const per100 = (price / REF_BC) / (BOTTLE_ML/100);
+    return { label:b.label, self:b.self, per100 };
+  }).filter(Boolean);
+  rows.sort((a,b)=>a.per100-b.per100);
+
+  if(rows.length===0){
+    rankEl.innerHTML = '<div class="empty">20병 기준 데이터가 없어요.</div>';
+    conclEl.innerHTML = '';
+  } else {
+    const maxVal = Math.max(...rows.map(r=>r.per100));
+    rankEl.innerHTML = rows.map((r,i)=>`
+      <div class="rank-row ${r.self?'self':''}">
+        <div class="rank-num">${i+1}</div>
+        <div class="rank-name">${r.label}${r.self?' (자사)':''}</div>
+        <div class="rank-bar-wrap"><div class="rank-bar" style="width:${(r.per100/maxVal*100).toFixed(0)}%"></div></div>
+        <div class="rank-price">${fmt(Math.round(r.per100*10)/10)}원/100mL</div>
+      </div>`).join('');
+
+    // ③ 결론 문장 자동 생성
+    const selfIdx = rows.findIndex(r=>r.self);
+    const cheapest = rows[0], priciest = rows[rows.length-1];
+    let lines = [];
+    if(selfIdx >= 0){
+      lines.push(`스파클(자사)은 전체 ${rows.length}개 브랜드 중 <b>${selfIdx+1}위</b>로 저렴한 편이에요 (100mL당 ${fmt(Math.round(rows[selfIdx].per100*10)/10)}원).`);
+      if(selfIdx>0){
+        const cheaper = rows.slice(0, selfIdx).map(r=>r.label).join(', ');
+        lines.push(`자사보다 저렴한 브랜드: ${cheaper}`);
+      } else {
+        lines.push('현재 전 브랜드 중 자사가 가장 저렴해요.');
+      }
+    }
+    lines.push(`가장 비싼 브랜드는 <b>${priciest.label}</b>(100mL당 ${fmt(Math.round(priciest.per100*10)/10)}원)이에요.`);
+    if(prevDate){
+      const diffs2 = computeDiffs(dateStr, prevDate);
+      if(diffs2.length>0){
+        const risers = diffs2.filter(d=>d.delta>0).map(d=>d.brand.label);
+        const uniqueRisers = [...new Set(risers)];
+        if(uniqueRisers.length>0) lines.push(`오늘 가격을 올린 곳: ${uniqueRisers.join(', ')}`);
+      }
+    }
+    conclEl.innerHTML = lines.map(l=>`<div>· ${l}</div>`).join('');
+  }
+}
 function populateDateSelects(){
   const dates = sortedDates();
   const opts = dates.slice().reverse().map(d=>`<option value="${d}">${d}</option>`).join('');
-  ['changeDate','compareDate'].forEach(id=>{
+  ['changeDate','compareDate','summaryDate'].forEach(id=>{
     const el = document.getElementById(id);
     const prevVal = el.value;
     el.innerHTML = opts || '<option value="">데이터 없음</option>';
@@ -625,6 +764,7 @@ async function silentRefresh(){
   if(activeTab==='changes') renderChanges();
   if(activeTab==='compare') renderCompare();
   if(activeTab==='trend') renderTrend();
+  if(activeTab==='summary') renderSummary();
 }
 
 // ---------- init ----------
@@ -677,12 +817,14 @@ async function init(){
     e.target.classList.toggle('on', compareMode==='per100');
     renderCompare();
   });
+  document.getElementById('summaryDate').addEventListener('change', renderSummary);
 
   // 기본으로 최신 날짜 선택
   const ld = latestDate();
   if(ld){
     document.getElementById('changeDate').value = ld;
     document.getElementById('compareDate').value = ld;
+    document.getElementById('summaryDate').value = ld;
   }
 }
 init();
